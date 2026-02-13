@@ -12,6 +12,10 @@
 name: Build Tor Android Executable
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/build-tor.yml'
   workflow_dispatch:
     inputs:
       tor_version:

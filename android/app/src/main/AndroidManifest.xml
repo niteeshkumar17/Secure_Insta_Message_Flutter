@@ -1,0 +1,77 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- 
+        Secure Insta Message — Android Manifest
+        
+        Permissions:
+        - INTERNET: Required for Tor connectivity (all traffic routed through Tor)
+        - RECORD_AUDIO: Voice messages (async only, no calls)
+        - FOREGROUND_SERVICE: Required for embedded Tor daemon
+        - FOREGROUND_SERVICE_DATA_SYNC: Tor runs as data sync service (Android 14+)
+        - POST_NOTIFICATIONS: Required for foreground service notification (Android 13+)
+        
+        NO permissions for:
+        - READ_CONTACTS (no contact syncing)
+        - ACCESS_FINE_LOCATION (no location access)
+        - CAMERA (no video)
+        - RECEIVE_BOOT_COMPLETED (no background startup)
+    -->
+
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <application
+        android:label="Secure Insta Message"
+        android:name="${applicationName}"
+        android:icon="@drawable/ic_launcher"
+        android:usesCleartextTraffic="false"
+        android:networkSecurityConfig="@xml/network_security_config">
+
+        <!-- FLAG_SECURE: Prevent screenshots in task switcher -->
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:launchMode="singleTop"
+            android:taskAffinity=""
+            android:theme="@style/LaunchTheme"
+            android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|locale|layoutDirection|fontScale|screenLayout|density|uiMode"
+            android:hardwareAccelerated="true"
+            android:windowSoftInputMode="adjustResize"
+            android:enableOnBackInvokedCallback="true">
+
+            <meta-data
+                android:name="io.flutter.embedding.android.NormalTheme"
+                android:resource="@style/NormalTheme" />
+
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN"/>
+                <category android:name="android.intent.category.LAUNCHER"/>
+            </intent-filter>
+        </activity>
+
+        <meta-data
+            android:name="flutterEmbedding"
+            android:value="2" />
+
+        <!-- TorService: Foreground service for embedded Tor daemon -->
+        <service
+            android:name=".TorService"
+            android:enabled="true"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
+
+        <!-- No analytics, no crash reporting, no telemetry -->
+        <!-- No Firebase, no Google services -->
+
+    </application>
+
+    <!-- 
+        Queries: none.
+        We do not query other apps or services.
+        All communication goes through the Python core via IPC.
+    -->
+
+</manifest>

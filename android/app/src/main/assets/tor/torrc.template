@@ -1,0 +1,48 @@
+# Secure Insta Message — Base Tor Configuration
+#
+# This file serves as a reference. The actual torrc is generated
+# at runtime by TorService.kt to include correct paths.
+#
+# This is a MOBILE configuration with reduced resource usage.
+
+# SOCKS proxy (localhost only — no external access)
+SOCKSPort 127.0.0.1:9050
+
+# Control port for bootstrap monitoring
+ControlPort 127.0.0.1:9051
+CookieAuthentication 1
+
+# Safety settings
+SafeSocks 1
+TestSocks 1
+
+# No DNS leaks — all DNS through Tor
+DNSPort 0
+
+# Logging to stdout (captured by Android service)
+Log notice stdout
+
+# Conservative settings for mobile
+AvoidDiskWrites 1
+ClientOnly 1
+
+# Reduced bandwidth for mobile networks
+ConnectionPadding 0
+ReducedConnectionPadding 1
+
+# Circuit settings
+# Note: These may need tuning based on network conditions
+MaxCircuitDirtiness 600
+NewCircuitPeriod 30
+NumEntryGuards 3
+
+# Disable WebTunnel/meek bridges by default
+# Enable only if needed in censored regions
+UseBridges 0
+
+# GeoIP files (paths set at runtime)
+# GeoIPFile /data/user/0/com.securemessage.app/files/geoip
+# GeoIPv6File /data/user/0/com.securemessage.app/files/geoip6
+
+# Data directory (set at runtime)
+# DataDirectory /data/user/0/com.securemessage.app/files/tor_data

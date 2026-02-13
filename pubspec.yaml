@@ -1,0 +1,41 @@
+name: secure_insta_message
+description: >
+  UI client for the Secure Insta Message protocol.
+  The reference implementation remains the CLI.
+  Experimental. Privacy-preserving. Not optimized for convenience.
+
+publish_to: 'none'
+
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.2.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  provider: ^6.1.1
+  qr_flutter: ^4.1.0
+  mobile_scanner: ^5.1.1
+  path_provider: ^2.1.2
+  # record: ^6.0.0  # Temporarily disabled for Tor testing
+  audioplayers: ^6.0.0
+  permission_handler: ^11.3.0
+  flutter_secure_storage: ^9.0.0
+  crypto: ^3.0.3
+  convert: ^3.1.1
+  uuid: ^4.3.3
+  http: ^1.2.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^3.0.1
+
+flutter:
+  uses-material-design: true
+
+  # fonts:
+  #   - family: JetBrainsMono
+  #     fonts:
+  #       - asset: assets/fonts/JetBrainsMono-Regular.ttf
