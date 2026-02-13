@@ -140,8 +140,10 @@ class TorService : Service() {
         torDataDir = File(filesDir, "tor_data")
         torDataDir!!.mkdirs()
 
-        // Extract Tor binary and config
-        val torBinary = extractAsset("tor/tor", "tor", executable = true)
+        // Get Tor binary from native libs (Android allows exec from here)
+        val torBinary = getNativeLibPath("libtor.so")
+        
+        // Extract GeoIP files from assets
         val geoipFile = extractAsset("tor/geoip", "geoip")
         val geoip6File = extractAsset("tor/geoip6", "geoip6")
         
@@ -348,6 +350,26 @@ class TorService : Service() {
         }
 
         return outputFile
+    }
+
+    /**
+     * Get the path to a native library in the app's native lib directory
+     * This is where Android allows execution of binaries
+     */
+    private fun getNativeLibPath(libName: String): File {
+        val nativeLibDir = applicationInfo.nativeLibraryDir
+        val libFile = File(nativeLibDir, libName)
+        
+        Log.i(TAG, "Native lib dir: $nativeLibDir")
+        Log.i(TAG, "Looking for: ${libFile.absolutePath}")
+        Log.i(TAG, "Exists: ${libFile.exists()}")
+        
+        if (libFile.exists()) {
+            Log.i(TAG, "Size: ${libFile.length()} bytes")
+            Log.i(TAG, "Executable: ${libFile.canExecute()}")
+        }
+        
+        return libFile
     }
 
     /**

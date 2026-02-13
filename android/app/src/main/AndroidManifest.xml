@@ -28,6 +28,7 @@
         android:name="${applicationName}"
         android:icon="@drawable/ic_launcher"
         android:usesCleartextTraffic="false"
+        android:extractNativeLibs="true"
         android:networkSecurityConfig="@xml/network_security_config">
 
         <!-- FLAG_SECURE: Prevent screenshots in task switcher -->
