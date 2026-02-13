@@ -1,0 +1,213 @@
+# Build Tor Executable for Android using Docker
+# More reliable cross-compilation in containerized environment
+
+name: Build Tor (Docker)
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/build-tor-docker.yml'
+  workflow_dispatch:
+    inputs:
+      tor_version:
+        description: 'Tor version'
+        default: '0.4.8.13'
+
+env:
+  TOR_VERSION: '0.4.8.13'
+  OPENSSL_VERSION: '3.2.1'
+  LIBEVENT_VERSION: '2.1.12-stable'
+  ZLIB_VERSION: '1.3.1'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container:
+      image: ubuntu:22.04
+    
+    steps:
+      - name: Install base dependencies
+        run: |
+          apt-get update
+          apt-get install -y \
+            curl wget git unzip \
+            build-essential \
+            autoconf automake libtool libtool-bin pkg-config \
+            python3 file
+
+      - name: Setup Android NDK
+        run: |
+          cd /opt
+          wget -q https://dl.google.com/android/repository/android-ndk-r25c-linux.zip
+          unzip -q android-ndk-r25c-linux.zip
+          rm android-ndk-r25c-linux.zip
+          
+          echo "ANDROID_NDK_ROOT=/opt/android-ndk-r25c" >> $GITHUB_ENV
+          echo "TOOLCHAIN=/opt/android-ndk-r25c/toolchains/llvm/prebuilt/linux-x86_64" >> $GITHUB_ENV
+          echo "TARGET=aarch64-linux-android21" >> $GITHUB_ENV
+          echo "HOST=aarch64-linux-android" >> $GITHUB_ENV
+
+      - name: Setup environment
+        run: |
+          mkdir -p /build/prefix /build/output
+          echo "PREFIX=/build/prefix" >> $GITHUB_ENV
+          
+          # Export compiler paths
+          TOOLCHAIN=/opt/android-ndk-r25c/toolchains/llvm/prebuilt/linux-x86_64
+          echo "CC=$TOOLCHAIN/bin/aarch64-linux-android21-clang" >> $GITHUB_ENV
+          echo "CXX=$TOOLCHAIN/bin/aarch64-linux-android21-clang++" >> $GITHUB_ENV
+          echo "AR=$TOOLCHAIN/bin/llvm-ar" >> $GITHUB_ENV
+          echo "RANLIB=$TOOLCHAIN/bin/llvm-ranlib" >> $GITHUB_ENV
+          echo "STRIP=$TOOLCHAIN/bin/llvm-strip" >> $GITHUB_ENV
+          echo "PATH=$TOOLCHAIN/bin:$PATH" >> $GITHUB_ENV
+
+      - name: Build zlib
+        run: |
+          cd /build
+          wget -q https://zlib.net/zlib-${{ env.ZLIB_VERSION }}.tar.gz
+          tar xzf zlib-${{ env.ZLIB_VERSION }}.tar.gz
+          cd zlib-${{ env.ZLIB_VERSION }}
+          
+          CHOST=aarch64-linux-android ./configure --prefix=/build/prefix --static
+          make -j$(nproc)
+          make install
+
+      - name: Build OpenSSL
+        run: |
+          cd /build
+          wget -q https://www.openssl.org/source/openssl-${{ env.OPENSSL_VERSION }}.tar.gz
+          tar xzf openssl-${{ env.OPENSSL_VERSION }}.tar.gz
+          cd openssl-${{ env.OPENSSL_VERSION }}
+          
+          export ANDROID_NDK_ROOT=/opt/android-ndk-r25c
+          export PATH=/opt/android-ndk-r25c/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH
+          
+          ./Configure android-arm64 \
+            --prefix=/build/prefix \
+            --openssldir=/build/prefix/ssl \
+            no-shared no-tests no-ui-console \
+            -D__ANDROID_API__=21
+          
+          make -j$(nproc)
+          make install_sw
+
+      - name: Build libevent
+        run: |
+          cd /build
+          wget -q https://github.com/libevent/libevent/releases/download/release-${{ env.LIBEVENT_VERSION }}/libevent-${{ env.LIBEVENT_VERSION }}.tar.gz
+          tar xzf libevent-${{ env.LIBEVENT_VERSION }}.tar.gz
+          cd libevent-${{ env.LIBEVENT_VERSION }}
+          
+          export TOOLCHAIN=/opt/android-ndk-r25c/toolchains/llvm/prebuilt/linux-x86_64
+          export CC=$TOOLCHAIN/bin/aarch64-linux-android21-clang
+          export AR=$TOOLCHAIN/bin/llvm-ar
+          export RANLIB=$TOOLCHAIN/bin/llvm-ranlib
+          
+          ./configure \
+            --host=aarch64-linux-android \
+            --prefix=/build/prefix \
+            --disable-shared --enable-static \
+            --disable-samples --disable-libevent-regress \
+            CFLAGS="-I/build/prefix/include" \
+            LDFLAGS="-L/build/prefix/lib"
+          
+          make -j$(nproc)
+          make install
+
+      - name: Build Tor
+        run: |
+          cd /build
+          wget -q https://dist.torproject.org/tor-${{ env.TOR_VERSION }}.tar.gz
+          tar xzf tor-${{ env.TOR_VERSION }}.tar.gz
+          cd tor-${{ env.TOR_VERSION }}
+          
+          export TOOLCHAIN=/opt/android-ndk-r25c/toolchains/llvm/prebuilt/linux-x86_64
+          export CC=$TOOLCHAIN/bin/aarch64-linux-android21-clang
+          export CXX=$TOOLCHAIN/bin/aarch64-linux-android21-clang++
+          export AR=$TOOLCHAIN/bin/llvm-ar
+          export RANLIB=$TOOLCHAIN/bin/llvm-ranlib
+          export STRIP=$TOOLCHAIN/bin/llvm-strip
+          export PATH=$TOOLCHAIN/bin:$PATH
+          
+          export PKG_CONFIG_PATH=/build/prefix/lib/pkgconfig
+          export PKG_CONFIG_LIBDIR=/build/prefix/lib/pkgconfig
+          
+          # Run autogen to prepare build system
+          ./autogen.sh
+          
+          # Configure with cross-compilation settings
+          ./configure \
+            --host=aarch64-linux-android \
+            --prefix=/build/prefix \
+            --disable-asciidoc \
+            --disable-system-torrc \
+            --disable-tool-name-check \
+            --disable-lzma \
+            --disable-zstd \
+            --disable-gcc-hardening \
+            --disable-linker-hardening \
+            --disable-unittests \
+            --enable-static-tor \
+            --with-libevent-dir=/build/prefix \
+            --with-openssl-dir=/build/prefix \
+            --with-zlib-dir=/build/prefix \
+            CFLAGS="-I/build/prefix/include -O2 -fPIE -fPIC" \
+            LDFLAGS="-L/build/prefix/lib -pie"
+          
+          make -j$(nproc)
+          
+          # Check what we built
+          echo "=== Build results ==="
+          file src/app/tor
+          ls -la src/app/tor
+
+      - name: Verify binary
+        run: |
+          cd /build/tor-${{ env.TOR_VERSION }}
+          
+          TOOLCHAIN=/opt/android-ndk-r25c/toolchains/llvm/prebuilt/linux-x86_64
+          
+          echo "=== Binary info ==="
+          file src/app/tor
+          $TOOLCHAIN/bin/llvm-readelf -h src/app/tor | head -20
+          
+          # Strip and copy
+          $TOOLCHAIN/bin/llvm-strip --strip-all -o /build/output/tor src/app/tor
+          
+          echo ""
+          echo "=== Stripped binary ==="
+          file /build/output/tor
+          ls -la /build/output/tor
+
+      - name: Get GeoIP files
+        run: |
+          cd /build/output
+          wget -q https://gitlab.torproject.org/tpo/core/tor/-/raw/main/src/config/geoip
+          wget -q https://gitlab.torproject.org/tpo/core/tor/-/raw/main/src/config/geoip6
+          
+          ls -la
+
+      - name: Create info file
+        run: |
+          cd /build/output
+          cat > BUILD_INFO.txt << 'EOF'
+          Tor Android Binary
+          ==================
+          Tor: ${{ env.TOR_VERSION }}
+          OpenSSL: ${{ env.OPENSSL_VERSION }}
+          libevent: ${{ env.LIBEVENT_VERSION }}
+          Target: aarch64-linux-android (arm64-v8a)
+          API: 21
+          EOF
+          
+          echo "" >> BUILD_INFO.txt
+          file tor >> BUILD_INFO.txt
+          cat BUILD_INFO.txt
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tor-android-arm64-v8a
+          path: /build/output/
+          retention-days: 30
