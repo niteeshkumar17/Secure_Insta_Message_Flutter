@@ -1,0 +1,28 @@
+# Flutter/Dart
+.dart_tool/
+.packages
+build/
+.flutter-plugins
+.flutter-plugins-dependencies
+
+# Android
+android/.gradle/
+android/app/build/
+android/local.properties
+*.apk
+*.aab
+
+# IDE
+.idea/
+*.iml
+.vscode/
+
+# Tor binary (will be built by CI)
+# android/app/src/main/assets/tor/tor
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
