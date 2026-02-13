@@ -51,19 +51,23 @@ jobs:
 
       - name: Set environment variables
         run: |
-          echo "ANDROID_NDK_HOME=${{ steps.setup-ndk.outputs.ndk-path }}" >> $GITHUB_ENV
-          echo "TOOLCHAIN=${{ steps.setup-ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64" >> $GITHUB_ENV
+          NDK_PATH="${{ steps.setup-ndk.outputs.ndk-path }}"
+          TOOLCHAIN_PATH="$NDK_PATH/toolchains/llvm/prebuilt/linux-x86_64"
           
-      - name: Configure toolchain
-        run: |
-          echo "CC=$TOOLCHAIN/bin/${{ env.TARGET_TRIPLE }}${{ env.API_LEVEL }}-clang" >> $GITHUB_ENV
-          echo "CXX=$TOOLCHAIN/bin/${{ env.TARGET_TRIPLE }}${{ env.API_LEVEL }}-clang++" >> $GITHUB_ENV
-          echo "AR=$TOOLCHAIN/bin/llvm-ar" >> $GITHUB_ENV
-          echo "AS=$TOOLCHAIN/bin/llvm-as" >> $GITHUB_ENV
-          echo "LD=$TOOLCHAIN/bin/ld" >> $GITHUB_ENV
-          echo "RANLIB=$TOOLCHAIN/bin/llvm-ranlib" >> $GITHUB_ENV
-          echo "STRIP=$TOOLCHAIN/bin/llvm-strip" >> $GITHUB_ENV
-          echo "NM=$TOOLCHAIN/bin/llvm-nm"  >> $GITHUB_ENV
+          echo "ANDROID_NDK_HOME=$NDK_PATH" >> $GITHUB_ENV
+          echo "ANDROID_NDK_ROOT=$NDK_PATH" >> $GITHUB_ENV
+          echo "TOOLCHAIN=$TOOLCHAIN_PATH" >> $GITHUB_ENV
+          echo "PATH=$TOOLCHAIN_PATH/bin:$PATH" >> $GITHUB_ENV
+          
+          # Set compiler variables
+          echo "CC=$TOOLCHAIN_PATH/bin/${{ env.TARGET_TRIPLE }}${{ env.API_LEVEL }}-clang" >> $GITHUB_ENV
+          echo "CXX=$TOOLCHAIN_PATH/bin/${{ env.TARGET_TRIPLE }}${{ env.API_LEVEL }}-clang++" >> $GITHUB_ENV
+          echo "AR=$TOOLCHAIN_PATH/bin/llvm-ar" >> $GITHUB_ENV
+          echo "AS=$TOOLCHAIN_PATH/bin/llvm-as" >> $GITHUB_ENV
+          echo "LD=$TOOLCHAIN_PATH/bin/ld" >> $GITHUB_ENV
+          echo "RANLIB=$TOOLCHAIN_PATH/bin/llvm-ranlib" >> $GITHUB_ENV
+          echo "STRIP=$TOOLCHAIN_PATH/bin/llvm-strip" >> $GITHUB_ENV
+          echo "NM=$TOOLCHAIN_PATH/bin/llvm-nm" >> $GITHUB_ENV
 
       - name: Install build dependencies
         run: |
@@ -92,9 +96,13 @@ jobs:
       - name: Build OpenSSL
         run: |
           cd $HOME/tor-build
-          curl -LO https://www.openssl.org/source/openssl-${{ github.event.inputs.openssl_version || '3.2.1' }}.tar.gz
-          tar xzf openssl-${{ github.event.inputs.openssl_version || '3.2.1' }}.tar.gz
-          cd openssl-${{ github.event.inputs.openssl_version || '3.2.1' }}
+          OPENSSL_VER="${{ github.event.inputs.openssl_version || '3.2.1' }}"
+          curl -LO "https://www.openssl.org/source/openssl-${OPENSSL_VER}.tar.gz"
+          tar xzf "openssl-${OPENSSL_VER}.tar.gz"
+          cd "openssl-${OPENSSL_VER}"
+          
+          # Use env var that was already set
+          export PATH="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH"
           
           ./Configure android-arm64 \
             --prefix=$HOME/tor-build/prefix \
