@@ -76,7 +76,7 @@ jobs:
       - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y autoconf automake libtool pkg-config
+          sudo apt-get install -y autoconf automake libtool libtool-bin pkg-config
 
       - name: Create build directories
         run: |
@@ -150,6 +150,13 @@ jobs:
       - name: Build Tor executable
         run: |
           cd $HOME/tor-build/tor-src
+          
+          # Regenerate build system (required for cross-compile)
+          ./autogen.sh || autoreconf -i
+          
+          # Set PKG_CONFIG for cross-compilation
+          export PKG_CONFIG_PATH=$HOME/tor-build/prefix/lib/pkgconfig
+          export PKG_CONFIG_LIBDIR=$HOME/tor-build/prefix/lib/pkgconfig
           
           # Configure for Android as EXECUTABLE (not library)
           ./configure \
