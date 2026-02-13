@@ -158,7 +158,15 @@ jobs:
           export PKG_CONFIG_PATH=$HOME/tor-build/prefix/lib/pkgconfig
           export PKG_CONFIG_LIBDIR=$HOME/tor-build/prefix/lib/pkgconfig
           
+          # Use the explicitly set cross compiler
+          export CC="${{ env.CC }}"
+          export CXX="${{ env.CXX }}"
+          export AR="${{ env.AR }}"
+          export RANLIB="${{ env.RANLIB }}"
+          export STRIP="${{ env.STRIP }}"
+          
           # Configure for Android as EXECUTABLE (not library)
+          # Use --disable-gcc-hardening to avoid cross-compile check issues
           ./configure \
             --host=${{ env.TARGET_TRIPLE }} \
             --prefix=$HOME/tor-build/prefix \
@@ -167,14 +175,16 @@ jobs:
             --disable-tool-name-check \
             --disable-lzma \
             --disable-zstd \
+            --disable-gcc-hardening \
+            --disable-linker-hardening \
             --enable-static-tor \
             --with-libevent-dir=$HOME/tor-build/prefix \
             --with-openssl-dir=$HOME/tor-build/prefix \
             --with-zlib-dir=$HOME/tor-build/prefix \
             CFLAGS="-I$HOME/tor-build/prefix/include -O2 -fPIE -fPIC" \
-            LDFLAGS="-L$HOME/tor-build/prefix/lib -pie -static-libstdc++"
+            LDFLAGS="-L$HOME/tor-build/prefix/lib -pie"
           
-          make -j$(nproc)
+          make -j$(nproc) V=1
 
       - name: Verify and strip binary
         run: |
