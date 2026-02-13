@@ -1,0 +1,160 @@
+# Extract pre-built Tor binary from Guardian Project's releases
+# Alternative approach when building from source fails
+
+name: Get Tor Binary (Pre-built)
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/get-tor-prebuilt.yml'
+  workflow_dispatch:
+
+jobs:
+  extract:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y curl unzip file
+
+      - name: Download tor-android AAR
+        run: |
+          mkdir -p /tmp/tor-extract
+          cd /tmp/tor-extract
+          
+          # Try multiple sources for pre-built tor binaries
+          
+          # Option 1: Guardian Project's tor-android from Maven
+          echo "=== Trying Guardian Project tor-android AAR ==="
+          curl -L -o tor-android.aar \
+            "https://repo1.maven.org/maven2/org/torproject/tor-android/0.4.8.12/tor-android-0.4.8.12.aar" || true
+          
+          if [ -f tor-android.aar ] && [ -s tor-android.aar ]; then
+            echo "Downloaded tor-android AAR"
+            unzip -o tor-android.aar
+            ls -la
+            
+            # Check for native libraries
+            if [ -d jni ]; then
+              echo "=== JNI contents ==="
+              find jni -type f -name "*.so" -exec ls -la {} \; -exec file {} \;
+            fi
+          fi
+
+      - name: Try IPtProxy package
+        run: |
+          cd /tmp/tor-extract
+          
+          echo "=== Trying IPtProxy AAR ==="
+          curl -L -o iptproxy.aar \
+            "https://repo1.maven.org/maven2/com/nickcardoso/iptproxy/3.7.0/iptproxy-3.7.0.aar" 2>/dev/null || true
+          
+          if [ -f iptproxy.aar ] && [ -s iptproxy.aar ]; then
+            mkdir -p iptproxy-extract
+            cd iptproxy-extract
+            unzip -o ../iptproxy.aar
+            find . -name "*.so" -exec file {} \;
+          fi
+
+      - name: Download from Orbot APK 
+        run: |
+          mkdir -p /tmp/orbot-extract
+          cd /tmp/orbot-extract
+          
+          echo "=== Downloading Orbot from GitHub ==="
+          # Try to get latest Orbot release  
+          RELEASE=$(curl -s https://api.github.com/repos/guardianproject/orbot/releases/latest)
+          APK_URL=$(echo "$RELEASE" | grep -o '"browser_download_url": *"[^"]*arm64[^"]*\.apk"' | head -1 | cut -d'"' -f4)
+          
+          if [ -n "$APK_URL" ]; then
+            echo "Downloading: $APK_URL"
+            curl -L -o orbot.apk "$APK_URL"
+            
+            unzip -o orbot.apk "lib/*" || true
+            
+            echo "=== Extracted native libs ==="
+            find lib -type f -name "*.so" 2>/dev/null | while read f; do
+              echo "File: $f"
+              file "$f"
+              SIZE=$(stat -c%s "$f")
+              echo "Size: $SIZE bytes"
+              echo ""
+            done
+          else
+            echo "Could not find Orbot APK URL"
+          fi
+
+      - name: Analyze extracted binaries
+        run: |
+          echo "=== Analyzing all extracted .so files ==="
+          
+          find /tmp -name "*.so" 2>/dev/null | while read f; do
+            echo "========================================"
+            echo "File: $f"
+            file "$f"
+            
+            # Check if it has an entry point (could be PIE executable)
+            if command -v readelf &> /dev/null; then
+              ENTRY=$(readelf -h "$f" 2>/dev/null | grep "Entry point" | awk '{print $NF}')
+              TYPE=$(readelf -h "$f" 2>/dev/null | grep "Type:" | awk '{print $2}')
+              echo "ELF Type: $TYPE"
+              echo "Entry Point: $ENTRY"
+              
+              # Non-zero entry point on DYN type = PIE executable
+              if [ "$TYPE" = "DYN" ] && [ "$ENTRY" != "0x0" ]; then
+                echo ">>> POSSIBLE PIE EXECUTABLE <<<"
+                
+                # Try to find tor-related symbols
+                if readelf -s "$f" 2>/dev/null | grep -q "tor_main\|connection_handle\|circuit_"; then
+                  echo ">>> CONTAINS TOR SYMBOLS - THIS MAY BE USABLE <<<"
+                fi
+              fi
+            fi
+            echo ""
+          done
+
+      - name: Create output
+        run: |
+          mkdir -p output
+          
+          # Look for the largest .so in arm64 folder - likely to be tor
+          LARGEST=$(find /tmp -path "*arm64*" -name "*.so" -type f -exec ls -S {} + 2>/dev/null | head -1)
+          
+          if [ -n "$LARGEST" ]; then
+            echo "Largest arm64 .so: $LARGEST"
+            cp "$LARGEST" output/
+            
+            # Also try to find libTor specifically  
+            find /tmp -path "*arm64*" -name "*[Tt]or*.so" -exec cp {} output/ \; 2>/dev/null || true
+            find /tmp -path "*arm64*" -name "*orbot*.so" -exec cp {} output/ \; 2>/dev/null || true
+          fi
+          
+          # Get GeoIP files
+          curl -L -o output/geoip https://gitlab.torproject.org/tpo/core/tor/-/raw/main/src/config/geoip
+          curl -L -o output/geoip6 https://gitlab.torproject.org/tpo/core/tor/-/raw/main/src/config/geoip6
+          
+          ls -la output/
+          
+          echo ""
+          echo "=== Output files analysis ==="
+          for f in output/*.so output/tor 2>/dev/null; do
+            if [ -f "$f" ]; then
+              echo "--- $f ---"
+              file "$f"
+              readelf -h "$f" 2>/dev/null | grep -E "Type:|Entry point" || true
+            fi
+          done
+
+      - name: Upload findings
+        uses: actions/upload-artifact@v4
+        with:
+          name: tor-binary-candidates
+          path: output/
+          retention-days: 7
+          if-no-files-found: warn
