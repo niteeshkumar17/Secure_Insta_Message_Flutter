@@ -73,7 +73,11 @@ class _NetworkStatusScreenState extends State<NetworkStatusScreen> {
                 const SizedBox(height: 12),
 
                 // Mailbox Status
-                _buildMailboxCard(context, status),
+                _buildMailboxCard(
+                  context,
+                  service.effectiveMailbox,
+                  service.mailboxSource,
+                ),
                 const SizedBox(height: 12),
 
                 // Configuration
@@ -91,29 +95,23 @@ class _NetworkStatusScreenState extends State<NetworkStatusScreen> {
     final status = tor.status;
     Color statusColor;
     String statusText;
-    IconData statusIcon;
 
     switch (status.state) {
       case TorState.connected:
         statusColor = AppTheme.success;
         statusText = 'Connected via Embedded Tor';
-        statusIcon = Icons.shield;
       case TorState.connecting:
         statusColor = AppTheme.warning;
         statusText = 'Bootstrapping: ${status.bootstrapProgress}%';
-        statusIcon = Icons.sync;
       case TorState.starting:
         statusColor = AppTheme.warning;
         statusText = 'Starting Tor daemon...';
-        statusIcon = Icons.hourglass_top;
       case TorState.error:
         statusColor = AppTheme.error;
         statusText = status.errorMessage ?? 'Tor Error';
-        statusIcon = Icons.error;
       case TorState.stopped:
         statusColor = AppTheme.error;
         statusText = 'Tor Stopped — Kill-switch Active';
-        statusIcon = Icons.shield_outlined;
     }
 
     return SecurityCard(
@@ -338,8 +336,10 @@ class _NetworkStatusScreenState extends State<NetworkStatusScreen> {
   }
 
   Widget _buildMailboxCard(
-      BuildContext context, NetworkStatus status) {
-    final mailbox = status.mailbox;
+    BuildContext context,
+    MailboxStatus? mailbox,
+    MailboxSource source,
+  ) {
 
     return SecurityCard(
       title: 'Mailbox (Dead Drop)',
@@ -384,6 +384,20 @@ class _NetworkStatusScreenState extends State<NetworkStatusScreen> {
                   'Pending messages: ${mailbox.pendingCount}',
                   style: Theme.of(context).textTheme.bodySmall,
                 ),
+                const SizedBox(height: 4),
+                Text(
+                  switch (source) {
+                    MailboxSource.runtime =>
+                      'Source: active mailbox from network core',
+                    MailboxSource.configured =>
+                      'Source: user-configured mailbox override',
+                    MailboxSource.builtInDefault =>
+                      'Source: built-in shared default mailbox',
+                    MailboxSource.none =>
+                      'Source: not configured',
+                  },
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
               ],
             ),
     );
@@ -398,7 +412,8 @@ class _NetworkStatusScreenState extends State<NetworkStatusScreen> {
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           Text(
-            'Advanced: manually configure relay and mailbox addresses.',
+            'Default shared mailbox is used automatically. '
+            'Advanced users can override mailbox/relay below.',
             style: Theme.of(context).textTheme.bodySmall,
           ),
           const SizedBox(height: 12),
@@ -427,6 +442,14 @@ class _NetworkStatusScreenState extends State<NetworkStatusScreen> {
   }) {
     final addressCtrl = TextEditingController();
     final portCtrl = TextEditingController();
+
+    if (!isRelay) {
+      final mailbox = service.effectiveMailbox;
+      if (mailbox != null) {
+        addressCtrl.text = mailbox.address;
+        portCtrl.text = mailbox.port.toString();
+      }
+    }
 
     showDialog(
       context: context,

@@ -12,6 +12,9 @@ class Identity {
   /// The .onion address for receiving messages.
   final String? onionAddress;
 
+  /// Random mailbox identifier (32 bytes hex-encoded) for message routing.
+  final String? mailboxId;
+
   /// Whether the identity has been loaded from the keystore.
   final bool isLoaded;
 
@@ -19,6 +22,7 @@ class Identity {
     required this.fingerprint,
     required this.publicKey,
     this.onionAddress,
+    this.mailboxId,
     this.isLoaded = false,
   });
 
@@ -32,6 +36,7 @@ class Identity {
         fingerprint: json['fingerprint'] as String? ?? '',
         publicKey: json['public_key'] as String? ?? '',
         onionAddress: json['onion_address'] as String?,
+        mailboxId: json['mailbox_id'] as String?,
         isLoaded: json['is_loaded'] as bool? ?? false,
       );
 
@@ -39,6 +44,7 @@ class Identity {
         'fingerprint': fingerprint,
         'public_key': publicKey,
         'onion_address': onionAddress,
+        'mailbox_id': mailboxId,
         'is_loaded': isLoaded,
       };
 

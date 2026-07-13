@@ -6,7 +6,6 @@ import '../services/network_service.dart';
 import '../services/tor_manager.dart';
 import '../models/message.dart';
 import '../models/delivery_status.dart';
-import '../models/network_status.dart';
 import '../theme/app_theme.dart';
 import '../widgets/common_widgets.dart';
 
@@ -249,11 +248,51 @@ class _ChatScreenState extends State<ChatScreen> {
     final text = _textController.text.trim();
     if (text.isEmpty) return;
 
-    _textController.clear();
-    await messaging.sendTextMessage(
+    final contact = context.read<ContactsService>().getContact(widget.contactId);
+    if (contact == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Contact not found')),
+      );
+      return;
+    }
+
+    final network = context.read<NetworkService>();
+    await network.refreshStatus();
+    final mailbox = network.status.mailbox;
+
+    final ready = await messaging.ensureInitialized(
+      mailboxAddress: mailbox?.address ?? '',
+      mailboxPort: mailbox?.port ?? 80,
+    );
+
+    if (!ready) {
+      final error = messaging.error ?? 'Messaging is not ready yet.';
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(error)),
+      );
+      return;
+    }
+
+    await messaging.registerContact(contact);
+
+    final sent = await messaging.sendTextMessage(
       contactId: widget.contactId,
       text: text,
+      contact: contact,
     );
+
+    if (!mounted) return;
+
+    if (!sent) {
+      final error = messaging.error ?? 'Failed to send message.';
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(error)),
+      );
+      return;
+    }
+
+    _textController.clear();
 
     // Scroll to bottom
     if (_scrollController.hasClients) {

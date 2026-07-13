@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 import '../services/identity_service.dart';
+import '../services/tor_manager.dart';
 import '../theme/app_theme.dart';
 import '../widgets/common_widgets.dart';
 
@@ -24,6 +25,15 @@ class _IdentityScreenState extends State<IdentityScreen> {
   final _passphraseController = TextEditingController();
   bool _showPassphrase = false;
   bool _showQr = false;
+
+  Future<String?> _exportIdentityWithFreshOnion(IdentityService service) async {
+    final tor = context.read<TorManager>();
+    final onion = await tor.getOnionAddress();
+    if (onion != null && onion.isNotEmpty) {
+      service.updateOnionAddress(onion);
+    }
+    return service.exportIdentity();
+  }
 
   @override
   void dispose() {
@@ -144,7 +154,7 @@ class _IdentityScreenState extends State<IdentityScreen> {
           ),
         ],
 
-        // QR code for sharing
+        // QR code for sharing (includes public key, fingerprint, and onion address)
         if (_showQr) ...[
           const SizedBox(height: 12),
           SecurityCard(
@@ -157,11 +167,17 @@ class _IdentityScreenState extends State<IdentityScreen> {
                   color: Colors.white,
                   borderRadius: BorderRadius.circular(8),
                 ),
-                child: QrImageView(
-                  data: identity.publicKey,
-                  version: QrVersions.auto,
-                  size: 200,
-                  backgroundColor: Colors.white,
+                child: FutureBuilder<String?>(
+                  future: _exportIdentityWithFreshOnion(service),
+                  builder: (context, snapshot) {
+                    final qrData = snapshot.data ?? identity.publicKey;
+                    return QrImageView(
+                      data: qrData,
+                      version: QrVersions.auto,
+                      size: 200,
+                      backgroundColor: Colors.white,
+                    );
+                  },
                 ),
               ),
             ),
@@ -174,8 +190,8 @@ class _IdentityScreenState extends State<IdentityScreen> {
           icon: const Icon(Icons.upload_outlined, size: 18),
           label: const Text('Export Identity'),
           onPressed: () async {
-            final data = await service.exportIdentity();
-            if (data != null && mounted) {
+            final data = await _exportIdentityWithFreshOnion(service);
+            if (data != null && context.mounted) {
               Clipboard.setData(ClipboardData(text: data));
               ScaffoldMessenger.of(context).showSnackBar(
                 const SnackBar(

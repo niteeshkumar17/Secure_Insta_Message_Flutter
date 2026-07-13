@@ -152,6 +152,28 @@ class TorManager extends ChangeNotifier {
     }
   }
 
+  /// Get this device's .onion address (null if not yet available)
+  Future<String?> getOnionAddress() async {
+    try {
+      final result = await _channel.invokeMethod('getOnionAddress');
+      return result as String?;
+    } on PlatformException catch (e) {
+      debugPrint('TorManager: Failed to get onion address: ${e.message}');
+      return null;
+    }
+  }
+
+  /// Get the local port for hidden service (default 8080)
+  Future<int> getHiddenServicePort() async {
+    try {
+      final result = await _channel.invokeMethod('getHiddenServicePort');
+      return result as int? ?? 8080;
+    } on PlatformException catch (e) {
+      debugPrint('TorManager: Failed to get hidden service port: ${e.message}');
+      return 8080;
+    }
+  }
+
   /// Check if SOCKS proxy is reachable
   Future<bool> isSocksReachable() async {
     try {
@@ -211,10 +233,9 @@ class TorManager extends ChangeNotifier {
   Future<void> initialize() async {
     await _updateStatus();
     
-    // If already running (from previous session), start polling
-    if (_status.isRunning) {
-      _startPolling();
-    }
+    // Always start polling to monitor Tor status
+    // Tor is auto-started by native TorService
+    _startPolling();
   }
 
   @override

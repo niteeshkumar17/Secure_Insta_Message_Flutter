@@ -22,3 +22,7 @@
     public static **[] values();
     public static ** valueOf(java.lang.String);
 }
+
+# Ignore Play Core missing classes (used by Flutter deferred components)
+-keep class com.google.android.play.core.** { *; }
+-dontwarn com.google.android.play.core.**

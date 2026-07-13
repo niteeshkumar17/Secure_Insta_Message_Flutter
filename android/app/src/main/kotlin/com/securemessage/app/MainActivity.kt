@@ -68,6 +68,14 @@ class MainActivity : FlutterActivity() {
                     result.success(TorService.bootstrapProgress)
                 }
 
+                "getOnionAddress" -> {
+                    result.success(TorService.getOnionAddress())
+                }
+
+                "getHiddenServicePort" -> {
+                    result.success(TorService.HIDDEN_SERVICE_PORT)
+                }
+
                 else -> {
                     result.notImplemented()
                 }

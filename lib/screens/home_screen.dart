@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../services/core_bridge.dart';
+import '../services/identity_service.dart';
 import '../services/network_service.dart';
 import '../services/tor_manager.dart';
 import '../models/network_status.dart';
@@ -27,6 +28,7 @@ class HomeScreen extends StatefulWidget {
 
 class _HomeScreenState extends State<HomeScreen> {
   int _selectedIndex = 0;
+  bool _onionAddressUpdated = false;
 
   static const _screens = <Widget>[
     ContactsScreen(),
@@ -62,6 +64,9 @@ class _HomeScreenState extends State<HomeScreen> {
   Widget build(BuildContext context) {
     return Consumer3<TorManager, CoreBridge, NetworkService>(
       builder: (context, tor, bridge, network, _) {
+        // Update identity's onion address when Tor connects
+        _updateOnionAddress(context, tor);
+        
         return Scaffold(
           body: Column(
             children: [
@@ -77,24 +82,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   icon: Icons.shield_outlined,
                 ),
                 
-              // Core process warning (only show if Tor is connected)
-              if (tor.status.isConnected && 
-                  bridge.state != CoreBridgeState.connected)
-                WarningBanner(
-                  text: 'Core process not connected. '
-                      'Messaging unavailable.',
-                  color: AppTheme.error,
-                  icon: Icons.error_outline,
-                ),
-                
-              // Cover traffic warning
-              if (tor.status.isConnected &&
-                  bridge.state == CoreBridgeState.connected &&
-                  !network.status.coverTrafficActive)
-                const WarningBanner(
-                  text: 'Cover traffic paused. '
-                      'Reduced anonymity while inactive.',
-                ),
+              // Note: Core process warning removed - using standalone Dart crypto
 
               // Main content
               Expanded(child: _screens[_selectedIndex]),
@@ -115,6 +103,26 @@ class _HomeScreenState extends State<HomeScreen> {
         );
       },
     );
+  }
+  
+  /// Update the identity service with the onion address from Tor
+  void _updateOnionAddress(BuildContext context, TorManager tor) {
+    // Only update once when Tor connects and we haven't updated yet
+    if (tor.status.isConnected && !_onionAddressUpdated) {
+      _onionAddressUpdated = true;
+      
+      // Fetch onion address asynchronously
+      tor.getOnionAddress().then((onionAddress) {
+        if (onionAddress != null && onionAddress.isNotEmpty) {
+          final identityService = context.read<IdentityService>();
+          identityService.updateOnionAddress(onionAddress);
+          debugPrint('HomeScreen: Updated identity with onion address: $onionAddress');
+        }
+      });
+    } else if (!tor.status.isConnected) {
+      // Reset flag if Tor disconnects so we can update again
+      _onionAddressUpdated = false;
+    }
   }
 }
 

@@ -1,24 +1,40 @@
 /// Delivery status for messages.
 ///
-/// Only two visual indicators are permitted:
-///   ✓  = sent (local confirmation that message entered the network)
-///   ✓✓ = delivered (cryptographic confirmation from the recipient)
+/// SECURITY-CRITICAL SEMANTICS:
+///
+/// Delivery confirmation requires cryptographic proof:
+///   - ✓ (sent) = Message queued to store-and-forward mailbox
+///   - ✓✓ (delivered) = Signed receipt from recipient's identity key
+///
+/// ✓✓ REQUIRES:
+///   1. Recipient retrieved from their mailbox
+///   2. Recipient decrypted the message
+///   3. Recipient signed a receipt with their Ed25519 identity key
+///   4. Receipt verified against stored contact public key
+///
+/// ✓✓ DOES NOT mean:
+///   - Message was read (no read receipts)
+///   - Recipient is online (async delivery)
+///   - HTTP 200 from any server (that proves nothing)
 ///
 /// The following are FORBIDDEN by the protocol:
 ///   - Read receipts
-///   - Typing indicators
+///   - Typing indicators  
 ///   - Online/last-seen status
+///   - Any status derived from transport HTTP responses
 enum DeliveryStatus {
-  /// Message is being prepared / queued.
+  /// Message is being prepared / encrypted.
   pending,
 
-  /// ✓ Message sent into the network (queued in cover traffic stream).
+  /// ✓ Message encrypted and submitted to mailbox network.
+  /// Does NOT indicate recipient has retrieved it.
   sent,
 
-  /// ✓✓ Cryptographic delivery confirmation received from recipient.
+  /// ✓✓ Cryptographic delivery receipt verified.
+  /// Recipient's Ed25519 signature confirmed.
   delivered,
 
-  /// Message failed to send (e.g., Tor disconnected, kill-switch).
+  /// Message could not be sent (kill-switch, session error, etc).
   failed;
 
   static DeliveryStatus fromString(String? value) {

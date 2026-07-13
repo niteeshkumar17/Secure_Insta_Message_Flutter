@@ -47,6 +47,7 @@ class TorService : Service() {
         // Tor ports (localhost only)
         const val SOCKS_PORT = 9050
         const val CONTROL_PORT = 9051
+        const val HIDDEN_SERVICE_PORT = 8080  // Local port for hidden service
         
         // State enum
         enum class TorState {
@@ -62,12 +63,27 @@ class TorService : Service() {
         private val _bootstrapProgress = AtomicInteger(0)
         private val _errorMessage = AtomicReference<String?>(null)
         private val _isRunning = AtomicBoolean(false)
+        private var _dataDir: File? = null
         
         val state: TorState get() = _state.get()
         val bootstrapProgress: Int get() = _bootstrapProgress.get()
         val errorMessage: String? get() = _errorMessage.get()
         val isRunning: Boolean get() = _isRunning.get()
         val socksPort: Int get() = if (_state.get() == TorState.CONNECTED) SOCKS_PORT else -1
+        
+        /**
+         * Get the .onion address for this device's hidden service.
+         * Returns null if Tor isn't connected or hostname file doesn't exist yet.
+         */
+        fun getOnionAddress(): String? {
+            val dataDir = _dataDir ?: return null
+            val hostnameFile = File(dataDir, "hidden_service/hostname")
+            return if (hostnameFile.exists()) {
+                hostnameFile.readText().trim()
+            } else {
+                null
+            }
+        }
         
         // Check if SOCKS proxy is reachable
         fun isSocksReachable(): Boolean {
@@ -139,6 +155,7 @@ class TorService : Service() {
         // Setup Tor data directory
         torDataDir = File(filesDir, "tor_data")
         torDataDir!!.mkdirs()
+        _dataDir = torDataDir  // Store for static access to hidden service hostname
 
         // Get Tor binary from native libs (Android allows exec from here)
         val torBinary = getNativeLibPath("libtor.so")
@@ -373,10 +390,16 @@ class TorService : Service() {
     }
 
     /**
-     * Create torrc configuration file
+     * Create torrc configuration file with hidden service support
      */
     private fun createTorrc(dataDir: File, geoipFile: File, geoip6File: File): File {
         val torrcFile = File(dataDir, "torrc")
+        
+        // Create hidden service directory
+        val hiddenServiceDir = File(dataDir, "hidden_service")
+        if (!hiddenServiceDir.exists()) {
+            hiddenServiceDir.mkdirs()
+        }
         
         val config = """
             # Secure Insta Message — Tor Configuration
@@ -396,6 +419,10 @@ class TorService : Service() {
             GeoIPFile ${geoipFile.absolutePath}
             GeoIPv6File ${geoip6File.absolutePath}
             
+            # Hidden Service for messaging
+            HiddenServiceDir ${hiddenServiceDir.absolutePath}
+            HiddenServicePort 80 127.0.0.1:$HIDDEN_SERVICE_PORT
+            
             # Safety settings
             SafeSocks 1
             TestSocks 1
@@ -408,7 +435,6 @@ class TorService : Service() {
             
             # Connection settings
             AvoidDiskWrites 1
-            ClientOnly 1
             
             # Mobile-friendly settings
             ConnectionPadding 0
