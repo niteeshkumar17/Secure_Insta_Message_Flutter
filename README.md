@@ -80,8 +80,9 @@ instructions on obtaining and verifying Tor binaries.
 | Fingerprint display | Public key fingerprint with QR code |
 | Contact management | Manual key exchange, fingerprint verification |
 | Text messaging | End-to-end encrypted via Double Ratchet |
-| Voice messages | Asynchronous only (no calls) |
+| Voice messages | Local recording, waveform preview, E2E encrypted |
 | Delivery receipts | ✓ sent / ✓✓ delivered (cryptographic) |
+| Local Metadata | Unread message badges, WhatsApp-style date separators, local bubble timestamps |
 | Relay configuration | Manual relay/mailbox setup |
 | Threat model docs | In-app security documentation |
 
@@ -91,7 +92,7 @@ These features are excluded by design:
 
 - Push notifications (FCM / APNS)
 - Typing indicators
-- Read receipts
+- Server-side read receipts (local unread badges are supported)
 - Online / last-seen status
 - Voice calls / video calls
 - Media streaming
@@ -195,7 +196,7 @@ where possible.**
 - **All network traffic** goes through embedded Tor (kill-switch enforced).
 - **No clearnet fallback** exists.
 - **No telemetry** — zero data collection, zero analytics.
-- **Messages have no timestamps** — only coarse ordering.
+- **Messages use local timestamps** — recorded strictly upon receipt, never transmitted over the network.
 - See [MOBILE_LIMITATIONS.md](MOBILE_LIMITATIONS.md) for mobile-specific
   security considerations.
 
