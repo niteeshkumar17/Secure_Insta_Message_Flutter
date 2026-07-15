@@ -1,5 +1,10 @@
 buildscript {
     ext.kotlin_version = '1.9.22'
+    ext.flutter = [
+        compileSdkVersion: 35,
+        minSdkVersion: 24,
+        targetSdkVersion: 35
+    ]
     repositories {
         google()
         mavenCentral()

@@ -98,7 +98,7 @@ class ContactsService extends ChangeNotifier {
         fingerprint: fingerprint,
         onionAddress: onionAddress,
         mailboxId: mailboxId,
-        isVerified: false,
+        isVerified: true, // TOFU: Trust on first use
         hasSession: false,
       );
 

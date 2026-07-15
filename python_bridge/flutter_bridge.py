@@ -56,6 +56,9 @@ class FlutterBridge:
         self._tor_manager = None
         self._cover_traffic = None
         self._running = True
+        
+        self._mailbox_address = None
+        self._mailbox_port = None
 
         # Method dispatch table
         self._methods: Dict[str, Any] = {
@@ -339,11 +342,38 @@ class FlutterBridge:
         """Get current network status."""
         tor_connected = self._tor_manager is not None
 
+        is_reachable = False
+        if tor_connected and self._mailbox_address and self._mailbox_port:
+            try:
+                import socks
+                import socket
+                
+                # Check reachability in a background thread to prevent blocking
+                def check():
+                    s = socks.socksocket()
+                    s.set_proxy(socks.SOCKS5, "127.0.0.1", 9050)
+                    s.settimeout(2.5)
+                    s.connect((self._mailbox_address, self._mailbox_port))
+                    s.close()
+                
+                await asyncio.to_thread(check)
+                is_reachable = True
+            except Exception:
+                is_reachable = False
+
+        mailbox_status = None
+        if self._mailbox_address and self._mailbox_port:
+            mailbox_status = {
+                'address': self._mailbox_address,
+                'port': self._mailbox_port,
+                'is_reachable': is_reachable
+            }
+
         return {
             'tor_status': 'connected' if tor_connected else 'disconnected',
             'tor_circuit_info': None,
             'relays': [],
-            'mailbox': None,
+            'mailbox': mailbox_status,
             'cover_traffic_active': self._cover_traffic is not None,
             'cover_packets_sent': 0,
             'real_packets_sent': 0,
@@ -355,6 +385,8 @@ class FlutterBridge:
 
     async def _configure_mailbox(self, params: dict) -> dict:
         """Configure mailbox address."""
+        self._mailbox_address = params.get('address')
+        self._mailbox_port = params.get('port')
         return {'success': True}
 
     # --- Lifecycle ---

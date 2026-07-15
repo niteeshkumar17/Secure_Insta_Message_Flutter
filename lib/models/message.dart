@@ -49,6 +49,12 @@ class Message {
   /// Used only for display ordering within a conversation.
   final int sequenceIndex;
 
+  /// Whether this message has been read by the user.
+  final bool isRead;
+
+  /// Local timestamp when message was created/received.
+  final String? localReceivedAt;
+
   const Message({
     required this.id,
     required this.contactId,
@@ -58,6 +64,8 @@ class Message {
     this.voiceDataPath,
     this.deliveryStatus = DeliveryStatus.pending,
     this.sequenceIndex = 0,
+    this.isRead = false,
+    this.localReceivedAt,
   });
 
   factory Message.fromJson(Map<String, dynamic> json) => Message(
@@ -70,6 +78,8 @@ class Message {
         deliveryStatus:
             DeliveryStatus.fromString(json['delivery_status'] as String?),
         sequenceIndex: json['sequence_index'] as int? ?? 0,
+        isRead: json['is_read'] as bool? ?? false,
+        localReceivedAt: json['local_received_at'] as String?,
       );
 
   Map<String, dynamic> toJson() => {
@@ -81,9 +91,15 @@ class Message {
         'voice_data_path': voiceDataPath,
         'delivery_status': deliveryStatus.name,
         'sequence_index': sequenceIndex,
+        'is_read': isRead,
+        'local_received_at': localReceivedAt,
       };
 
-  Message copyWith({DeliveryStatus? deliveryStatus}) => Message(
+  Message copyWith({
+    DeliveryStatus? deliveryStatus,
+    bool? isRead,
+    String? localReceivedAt,
+  }) => Message(
         id: id,
         contactId: contactId,
         isOutgoing: isOutgoing,
@@ -92,6 +108,8 @@ class Message {
         voiceDataPath: voiceDataPath,
         deliveryStatus: deliveryStatus ?? this.deliveryStatus,
         sequenceIndex: sequenceIndex,
+        isRead: isRead ?? this.isRead,
+        localReceivedAt: localReceivedAt ?? this.localReceivedAt,
       );
 
   static MessageType _parseType(String? value) {

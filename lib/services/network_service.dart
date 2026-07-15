@@ -1,8 +1,11 @@
 import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
-import '../models/network_status.dart';
+import '../models/network_status.dart' as models;
 import 'core_bridge.dart';
+import '../services/socks5_client.dart';
+import '../services/tor_manager.dart';
+import '../services/messaging_service.dart';
 
 enum MailboxSource {
   runtime,
@@ -28,12 +31,12 @@ class NetworkService extends ChangeNotifier {
   static const _mailboxAddressKey = 'default_mailbox_address';
   static const _mailboxPortKey = 'default_mailbox_port';
   static const _builtInMailboxAddress =
-      String.fromEnvironment('DEFAULT_MAILBOX_ONION', defaultValue: '');
+      String.fromEnvironment('DEFAULT_MAILBOX_ONION', defaultValue: 'p3grcgjclh7gu2iacwwkxs6skixj66777bbncpvc2m57lnsecuxurxad.onion');
   static const _builtInMailboxPort =
       int.fromEnvironment('DEFAULT_MAILBOX_PORT', defaultValue: 80);
 
-  NetworkStatus _status = const NetworkStatus();
-  NetworkStatus get status => _status;
+  models.NetworkStatus _status = const models.NetworkStatus();
+  models.NetworkStatus get status => _status;
 
   Timer? _pollTimer;
   static const _pollInterval = Duration(seconds: 5);
@@ -41,23 +44,25 @@ class NetworkService extends ChangeNotifier {
   bool _isMonitoring = false;
   bool get isMonitoring => _isMonitoring;
 
+  bool _isRefreshing = false;
+
   String? _configuredMailboxAddress;
   int? _configuredMailboxPort;
   bool _mailboxConfigLoaded = false;
 
-  MailboxStatus? get effectiveMailbox {
+  models.MailboxStatus? get effectiveMailbox {
     if (_status.mailbox != null) return _status.mailbox;
 
     final configured = _configuredMailboxAddress?.trim();
     if (configured != null && configured.isNotEmpty) {
-      return MailboxStatus(
+      return models.MailboxStatus(
         address: configured,
         port: _configuredMailboxPort ?? _builtInMailboxPort,
       );
     }
 
     if (_builtInMailboxAddress.trim().isNotEmpty) {
-      return const MailboxStatus(
+      return const models.MailboxStatus(
         address: _builtInMailboxAddress,
         port: _builtInMailboxPort,
       );
@@ -83,7 +88,9 @@ class NetworkService extends ChangeNotifier {
     return MailboxSource.none;
   }
 
-  NetworkService(this._bridge);
+  NetworkService(this._bridge, [this._torManager, this._messagingService]);
+  final TorManager? _torManager;
+  final MessagingService? _messagingService;
 
   Future<void> _ensureMailboxConfigLoaded() async {
     if (_mailboxConfigLoaded) return;
@@ -92,6 +99,15 @@ class NetworkService extends ChangeNotifier {
     final storedPort = await _storage.read(key: _mailboxPortKey);
     _configuredMailboxPort = int.tryParse(storedPort ?? '');
     _mailboxConfigLoaded = true;
+
+    final addrToUse = effectiveMailbox?.address;
+    final portToUse = effectiveMailbox?.port;
+    if (addrToUse != null && portToUse != null) {
+      await _bridge.send(
+        method: 'configure_mailbox',
+        params: {'address': addrToUse, 'port': portToUse},
+      );
+    }
   }
 
   Future<void> _persistMailboxConfig({
@@ -124,14 +140,59 @@ class NetworkService extends ChangeNotifier {
 
   /// Refresh network status from the core.
   Future<void> refreshStatus() async {
-    await _ensureMailboxConfigLoaded();
+    if (_isRefreshing) return;
+    _isRefreshing = true;
 
-    final response =
-        await _bridge.send(method: 'get_network_status');
+    try {
+      await _ensureMailboxConfigLoaded();
 
-    if (response.success && response.result != null) {
-      _status = NetworkStatus.fromJson(response.result!);
+      if (_torManager != null) {
+      final torStatus = _torManager!.status;
+      final isConnected = torStatus.isConnected;
+      
+      bool mailboxReachable = false;
+      final addr = effectiveMailbox?.address;
+      final port = effectiveMailbox?.port;
+      
+      if (isConnected && addr != null && port != null) {
+        try {
+          final client = Socks5Client(proxyPort: _torManager!.socksPort);
+          mailboxReachable = await client.checkReachability(
+            addr, 
+            port,
+            timeout: const Duration(seconds: 30),
+          );
+        } catch (e) {
+          debugPrint('NetworkService: Reachability check failed: $e');
+        }
+      }
+      
+      final coverManager = _messagingService?.coverTrafficManager;
+      final coverActive = coverManager?.isRunning ?? false;
+      final coverSent = coverManager?.stats.coverMessagesSent ?? 0;
+      final realSent = coverManager?.stats.realMessagesSent ?? 0;
+
+      _status = models.NetworkStatus(
+         torStatus: isConnected ? models.TorStatus.connected : models.TorStatus.disconnected,
+         torCircuitInfo: null,
+         relays: [],
+         mailbox: addr != null ? models.MailboxStatus(address: addr, port: port!, isReachable: mailboxReachable) : null,
+         coverTrafficActive: coverActive,
+         coverPacketsSent: coverSent,
+         realPacketsSent: realSent,
+      );
       notifyListeners();
+    } else {
+      final response =
+          await _bridge.send(method: 'get_network_status');
+
+      if (response.success && response.result != null) {
+        _status = models.NetworkStatus.fromJson(response.result!);
+        notifyListeners();
+      }
+    }
+    } finally {
+      _isRefreshing = false;
     }
   }
 

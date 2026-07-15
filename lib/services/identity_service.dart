@@ -57,10 +57,13 @@ class IdentityService extends ChangeNotifier {
       final privateKeyBytes = await keyPair.extractPrivateKeyBytes();
       final privateKeyHex = _bytesToHex(privateKeyBytes);
       
-      // Generate random 32-byte mailbox ID
-      final random = Random.secure();
-      final mailboxIdBytes = List<int>.generate(32, (_) => random.nextInt(256));
-      final mailboxId = _bytesToHex(mailboxIdBytes);
+      // Reuse existing mailbox ID if present, otherwise generate new one
+      var mailboxId = await _storage.read(key: 'identity_mailbox_id');
+      if (mailboxId == null || mailboxId.isEmpty) {
+        final random = Random.secure();
+        final mailboxIdBytes = List<int>.generate(32, (_) => random.nextInt(256));
+        mailboxId = _bytesToHex(mailboxIdBytes);
+      }
       
       // Store with passphrase as additional verification
       final passphraseHash = crypto_hash.sha256.convert(utf8.encode(passphrase)).toString();

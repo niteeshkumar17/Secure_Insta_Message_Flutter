@@ -3,6 +3,8 @@ import 'package:provider/provider.dart';
 import '../services/core_bridge.dart';
 import '../services/identity_service.dart';
 import '../services/network_service.dart';
+import '../services/messaging_service.dart';
+import '../services/contacts_service.dart';
 import '../services/tor_manager.dart';
 import '../models/network_status.dart';
 import '../theme/app_theme.dart';
@@ -117,6 +119,28 @@ class _HomeScreenState extends State<HomeScreen> {
           final identityService = context.read<IdentityService>();
           identityService.updateOnionAddress(onionAddress);
           debugPrint('HomeScreen: Updated identity with onion address: $onionAddress');
+        }
+      });
+      
+      // Initialize messaging service for background polling
+      final network = context.read<NetworkService>();
+      network.refreshStatus().then((_) {
+        final mailbox = network.status.mailbox;
+        if (mailbox != null) {
+          final messaging = context.read<MessagingService>();
+          messaging.ensureInitialized(
+            mailboxAddress: mailbox.address,
+            mailboxPort: mailbox.port,
+          ).then((ready) async {
+            if (ready) {
+              debugPrint('HomeScreen: MessagingService initialized for background polling');
+              // Register all existing contacts so incoming messages can be identified
+              final contacts = context.read<ContactsService>();
+              for (final contact in contacts.contacts) {
+                await messaging.registerContact(contact);
+              }
+            }
+          });
         }
       });
     } else if (!tor.status.isConnected) {

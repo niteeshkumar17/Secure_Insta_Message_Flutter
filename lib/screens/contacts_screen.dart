@@ -3,7 +3,10 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 import '../services/contacts_service.dart';
+import '../services/network_service.dart';
+import '../services/messaging_service.dart';
 import '../models/contact.dart';
+import '../models/message.dart';
 import '../theme/app_theme.dart';
 import '../widgets/common_widgets.dart';
 import 'chat_screen.dart';
@@ -48,6 +51,10 @@ class _ContactsScreenState extends State<ContactsScreen> {
 
     await service.loadContacts();
     if (mounted) {
+      final messaging = context.read<MessagingService>();
+      for (final contact in service.contacts) {
+        await messaging.loadMessages(contact.id);
+      }
       setState(() {
         _contacts = service.contacts.toList();
         _isLoading = false;
@@ -113,17 +120,25 @@ class _ContactsScreenState extends State<ContactsScreen> {
   }
 
   Widget _buildContactList(BuildContext context) {
-    return ListView.separated(
-      padding: const EdgeInsets.symmetric(vertical: 8),
-      itemCount: _contacts.length,
-      separatorBuilder: (_, __) => const Divider(height: 1),
-      itemBuilder: (context, index) {
-        final contact = _contacts[index];
-        return _ContactTile(
-          contact: contact,
-          onTap: () => _openChat(context, contact),
-          onVerify: () => _verifyContact(contact.id),
-          onRemove: () => _confirmRemove(context, contact),
+    return Consumer<MessagingService>(
+      builder: (context, messaging, _) {
+        return ListView.separated(
+          padding: const EdgeInsets.symmetric(vertical: 8),
+          itemCount: _contacts.length,
+          separatorBuilder: (_, __) => const Divider(height: 1),
+          itemBuilder: (context, index) {
+            final contact = _contacts[index];
+            final unreadCount = messaging.getUnreadCount(contact.id);
+            final lastMessage = messaging.getLastMessage(contact.id);
+            return _ContactTile(
+              contact: contact,
+              unreadCount: unreadCount,
+              lastMessage: lastMessage,
+              onTap: () => _openChat(context, contact),
+              onVerify: () => _verifyContact(contact.id),
+              onRemove: () => _confirmRemove(context, contact),
+            );
+          },
         );
       },
     );
@@ -169,6 +184,9 @@ class _ContactsScreenState extends State<ContactsScreen> {
               final service = _contactsService;
               if (service == null) return;
               await service.removeContact(contact.id);
+              if (context.mounted) {
+                await context.read<MessagingService>().removeContact(contact.id);
+              }
               await _loadContacts();
             },
             style: TextButton.styleFrom(foregroundColor: AppTheme.error),
@@ -212,6 +230,14 @@ class _ContactsScreenState extends State<ContactsScreen> {
     );
 
     if (!mounted) return;
+    
+    try {
+      final newContact = service.contacts.firstWhere((c) => c.mailboxId == mailboxId);
+      await context.read<MessagingService>().registerContact(newContact);
+    } catch (e) {
+      debugPrint('ContactsScreen: Failed to register new contact with messaging service: $e');
+    }
+    
     await _loadContacts();
   }
 }
@@ -476,16 +502,111 @@ class _QRScannerScreenState extends State<_QRScannerScreen> {
 /// A single contact row.
 class _ContactTile extends StatelessWidget {
   final Contact contact;
+  final int unreadCount;
+  final Message? lastMessage;
   final VoidCallback onTap;
   final VoidCallback onVerify;
   final VoidCallback onRemove;
 
   const _ContactTile({
     required this.contact,
+    required this.unreadCount,
+    required this.lastMessage,
     required this.onTap,
     required this.onVerify,
     required this.onRemove,
   });
+
+  String _formatMessageTime(String? isoString) {
+    if (isoString == null || isoString.isEmpty) return '';
+    try {
+      final dateTime = DateTime.parse(isoString).toLocal();
+      final now = DateTime.now();
+      
+      final todayStart = DateTime(now.year, now.month, now.day);
+      final yesterdayStart = todayStart.subtract(const Duration(days: 1));
+      final sixDaysAgoStart = todayStart.subtract(const Duration(days: 6));
+      
+      final msgDate = DateTime(dateTime.year, dateTime.month, dateTime.day);
+      
+      // Today: time (e.g., 8:20 am)
+      if (msgDate == todayStart) {
+        final hour = dateTime.hour > 12
+            ? dateTime.hour - 12
+            : (dateTime.hour == 0 ? 12 : dateTime.hour);
+        final amPm = dateTime.hour >= 12 ? 'pm' : 'am';
+        final minute = dateTime.minute.toString().padLeft(2, '0');
+        return '$hour:$minute $amPm';
+      }
+      
+      // Yesterday: Yesterday
+      if (msgDate == yesterdayStart) {
+        return 'Yesterday';
+      }
+      
+      // Within last 7 days (exclusive of today/yesterday): day name (e.g., Monday)
+      if (msgDate.isAfter(sixDaysAgoStart)) {
+        const days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+        return days[dateTime.weekday - 1];
+      }
+      
+      // Older than 7 days: date (e.g., 15/07/26)
+      final dayStr = dateTime.day.toString().padLeft(2, '0');
+      final monthStr = dateTime.month.toString().padLeft(2, '0');
+      final yearStr = dateTime.year.toString().substring(2);
+      return '$dayStr/$monthStr/$yearStr';
+    } catch (e) {
+      return '';
+    }
+  }
+
+  Widget? _buildSubtitle() {
+    final msg = lastMessage;
+    if (msg == null) {
+      return Text(
+        contact.formattedFingerprint.isEmpty
+            ? 'No fingerprint'
+            : contact.formattedFingerprint.substring(
+                0,
+                contact.formattedFingerprint.length > 24
+                    ? 24
+                    : contact.formattedFingerprint.length,
+              ),
+        style: TextStyle(
+          fontFamily: 'monospace',
+          fontSize: 11,
+          color: AppTheme.textSecondary,
+        ),
+      );
+    }
+
+    if (msg.type == MessageType.voice) {
+      return Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(Icons.mic, size: 14, color: AppTheme.textSecondary),
+          const SizedBox(width: 4),
+          Text(
+            'Voice Message',
+            style: TextStyle(
+              fontSize: 13,
+              color: AppTheme.textSecondary,
+            ),
+          ),
+        ],
+      );
+    }
+
+    return Text(
+      msg.textContent ?? '',
+      maxLines: 1,
+      overflow: TextOverflow.ellipsis,
+      style: TextStyle(
+        fontSize: 13,
+        color: AppTheme.textSecondary,
+      ),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -502,35 +623,60 @@ class _ContactTile extends StatelessWidget {
         ),
       ),
       title: Text(contact.label),
-      subtitle: Text(
-        contact.formattedFingerprint.isEmpty
-            ? 'No fingerprint'
-            : contact.formattedFingerprint.substring(
-                0,
-                contact.formattedFingerprint.length > 24
-                    ? 24
-                    : contact.formattedFingerprint.length,
-              ),
-        style: TextStyle(
-          fontFamily: 'monospace',
-          fontSize: 11,
-          color: AppTheme.textSecondary,
-        ),
-      ),
-      trailing: Row(
+      subtitle: _buildSubtitle(),
+      trailing: Column(
         mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.end,
+        mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          if (!contact.isVerified)
-            IconButton(
-              icon: Icon(Icons.verified_outlined,
-                  color: AppTheme.warning, size: 20),
-              tooltip: 'Verify fingerprint',
-              onPressed: onVerify,
+          if (lastMessage != null) ...[
+            Text(
+              _formatMessageTime(lastMessage!.localReceivedAt),
+              style: TextStyle(
+                color: unreadCount > 0
+                    ? AppTheme.primary
+                    : AppTheme.textSecondary,
+                fontSize: 11,
+              ),
             ),
-          if (contact.hasSession)
-            StatusDot(color: AppTheme.success)
-          else
-            StatusDot(color: AppTheme.textSecondary),
+            const SizedBox(height: 4),
+          ],
+          Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (!contact.isVerified) ...[
+                IconButton(
+                  icon: Icon(Icons.verified_outlined,
+                      color: AppTheme.warning, size: 18),
+                  tooltip: 'Verify fingerprint',
+                  constraints: const BoxConstraints(),
+                  padding: EdgeInsets.zero,
+                  onPressed: onVerify,
+                ),
+                const SizedBox(width: 6),
+              ],
+              if (unreadCount > 0)
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: AppTheme.primary,
+                    shape: BoxShape.circle,
+                  ),
+                  child: Text(
+                    '$unreadCount',
+                    style: const TextStyle(
+                      color: Colors.black,
+                      fontSize: 10,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                )
+              else if (contact.hasSession)
+                StatusDot(color: AppTheme.success)
+              else
+                StatusDot(color: AppTheme.textSecondary),
+            ],
+          ),
         ],
       ),
       onTap: onTap,

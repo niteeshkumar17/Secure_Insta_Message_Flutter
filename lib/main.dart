@@ -49,7 +49,7 @@ class _SecureInstaMessageAppState extends State<SecureInstaMessageApp> {
     _identityService = IdentityService(_bridge);
     _contactsService = ContactsService(_bridge);
     _messagingService = MessagingService(_bridge, _torManager);
-    _networkService = NetworkService(_bridge);
+    _networkService = NetworkService(_bridge, _torManager, _messagingService);
     
     // Initialize TorManager (Tor auto-starts via native service)
     _torManager.initialize();

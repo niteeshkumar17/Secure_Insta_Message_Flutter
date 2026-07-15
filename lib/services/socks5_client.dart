@@ -7,6 +7,13 @@ import 'package:flutter/foundation.dart';
 ///
 /// Implements SOCKS5 protocol to connect to .onion addresses via Tor's
 /// SOCKS proxy running on localhost:9050.
+///
+/// NOTE ON CONNECTION REUSE:
+/// This custom client does not support HTTP Keep-Alive / connection reuse.
+/// Each `post(...)` request establishes a new TCP connection and SOCKS5 handshake,
+/// and reads the response until EOF (the server closes the socket). The mailbox
+/// server also terminates the connection after sending the response by writing
+/// `Connection: close` and closing the writer.
 class Socks5Client {
   final String proxyHost;
   final int proxyPort;
@@ -46,8 +53,10 @@ class Socks5Client {
       socket.add([0x05, 0x01, 0x00]);
       await socket.flush();
 
+      final iterator = StreamIterator(socket);
+
       // Read handshake response
-      final handshakeResponse = await _readBytes(socket, 2, timeout);
+      final handshakeResponse = await _readBytes(iterator, 2, timeout);
       if (handshakeResponse == null ||
           handshakeResponse[0] != 0x05 ||
           handshakeResponse[1] != 0x00) {
@@ -78,7 +87,7 @@ class Socks5Client {
       await socket.flush();
 
       // Read CONNECT response (at least 10 bytes for IPv4 response)
-      final connectResponse = await _readBytes(socket, 10, timeout);
+      final connectResponse = await _readBytes(iterator, 10, timeout);
       if (connectResponse == null ||
           connectResponse[0] != 0x05 ||
           connectResponse[1] != 0x00) {
@@ -93,6 +102,7 @@ class Socks5Client {
       debugPrint('SOCKS5: Connected to $host:$port via Tor');
 
       // Now we have a connected socket - send HTTP request
+
       final jsonBody = jsonEncode(body);
       final httpRequest = 'POST $path HTTP/1.1\r\n'
           'Host: $host\r\n'
@@ -106,7 +116,7 @@ class Socks5Client {
       await socket.flush();
 
       // Read HTTP response
-      final response = await _readHttpResponse(socket, timeout);
+      final response = await _readHttpResponse(iterator, timeout);
       if (response == null) {
         debugPrint('SOCKS5: No HTTP response received');
         return null;
@@ -136,109 +146,108 @@ class Socks5Client {
     }
   }
 
-  /// Read exactly [count] bytes from socket with timeout.
-  Future<List<int>?> _readBytes(
-      Socket socket, int count, Duration timeout) async {
-    final completer = Completer<List<int>?>();
-    final buffer = <int>[];
-    StreamSubscription? subscription;
-    Timer? timer;
+  /// Check if a hidden service is reachable via SOCKS5 proxy
+  Future<bool> checkReachability(
+    String host,
+    int port, {
+    Duration timeout = const Duration(seconds: 15),
+  }) async {
+    Socket? socket;
 
-    timer = Timer(timeout, () {
-      subscription?.cancel();
-      if (!completer.isCompleted) {
-        completer.complete(null);
+    try {
+      socket = await Socket.connect(
+        proxyHost,
+        proxyPort,
+        timeout: timeout,
+      );
+
+      socket.add([0x05, 0x01, 0x00]);
+      await socket.flush();
+
+      final iterator = StreamIterator(socket);
+      final handshakeResponse = await _readBytes(iterator, 2, timeout);
+      if (handshakeResponse == null ||
+          handshakeResponse[0] != 0x05 ||
+          handshakeResponse[1] != 0x00) {
+        return false;
       }
-    });
 
-    subscription = socket.listen(
-      (data) {
-        buffer.addAll(data);
-        if (buffer.length >= count) {
-          timer?.cancel();
-          subscription?.cancel();
-          if (!completer.isCompleted) {
-            completer.complete(buffer.sublist(0, count));
-          }
-        }
-      },
-      onError: (e) {
-        timer?.cancel();
-        if (!completer.isCompleted) {
-          completer.complete(null);
-        }
-      },
-      onDone: () {
-        timer?.cancel();
-        if (!completer.isCompleted) {
-          completer.complete(buffer.length >= count ? buffer.sublist(0, count) : null);
-        }
-      },
-    );
+      final hostBytes = utf8.encode(host);
+      final connectRequest = [
+        0x05, 0x01, 0x00, 0x03,
+        hostBytes.length,
+        ...hostBytes,
+        (port >> 8) & 0xFF,
+        port & 0xFF,
+      ];
 
-    return completer.future;
+      socket.add(connectRequest);
+      await socket.flush();
+
+      final connectResponse = await _readBytes(iterator, 10, timeout);
+      if (connectResponse == null ||
+          connectResponse[0] != 0x05 ||
+          connectResponse[1] != 0x00) {
+        return false;
+      }
+
+      return true;
+    } catch (e) {
+      debugPrint('SOCKS5: Error checking reachability to $host:$port - $e');
+      return false;
+    } finally {
+      socket?.destroy();
+    }
   }
 
-  /// Read HTTP response from socket.
-  Future<String?> _readHttpResponse(Socket socket, Duration timeout) async {
-    final completer = Completer<String?>();
-    final buffer = StringBuffer();
-    StreamSubscription? subscription;
-    Timer? timer;
-
-    timer = Timer(timeout, () {
-      subscription?.cancel();
-      if (!completer.isCompleted) {
-        completer.complete(buffer.toString().isEmpty ? null : buffer.toString());
+  /// Read exactly [count] bytes from stream iterator with timeout.
+  Future<List<int>?> _readBytes(
+      StreamIterator<List<int>> iterator, int count, Duration timeout) async {
+    final buffer = <int>[];
+    
+    try {
+      while (buffer.length < count) {
+        final moved = await iterator.moveNext().timeout(timeout);
+        if (!moved) break;
+        buffer.addAll(iterator.current);
       }
-    });
+    } catch (e) {
+      return null;
+    }
 
-    subscription = socket.listen(
-      (data) {
-        buffer.write(utf8.decode(data, allowMalformed: true));
+    return buffer.length >= count ? buffer.sublist(0, count) : null;
+  }
+
+  /// Read HTTP response from stream iterator.
+  Future<String?> _readHttpResponse(
+      StreamIterator<List<int>> iterator, Duration timeout) async {
+    final buffer = <int>[];
+    
+    try {
+      while (true) {
+        final moved = await iterator.moveNext().timeout(timeout);
+        if (!moved) break;
+        buffer.addAll(iterator.current);
         
-        // Check if we've received the complete response
-        final content = buffer.toString();
-        if (content.contains('\r\n\r\n')) {
-          // Check for Content-Length or chunked encoding
-          final headerEnd = content.indexOf('\r\n\r\n');
-          final headers = content.substring(0, headerEnd).toLowerCase();
-          
-          if (headers.contains('content-length:')) {
-            // Parse content length
-            final match =
-                RegExp(r'content-length:\s*(\d+)').firstMatch(headers);
-            if (match != null) {
-              final contentLength = int.parse(match.group(1)!);
-              final bodyStart = headerEnd + 4;
-              final body = content.substring(bodyStart);
-              if (body.length >= contentLength) {
-                timer?.cancel();
-                subscription?.cancel();
-                if (!completer.isCompleted) {
-                  completer.complete(content);
-                }
-              }
+        final responseStr = utf8.decode(buffer, allowMalformed: true);
+        final headersEnd = responseStr.indexOf('\r\n\r\n');
+        if (headersEnd != -1) {
+          final headers = responseStr.substring(0, headersEnd).toLowerCase();
+          final contentLengthMatch = RegExp(r'content-length:\s*(\d+)').firstMatch(headers);
+          if (contentLengthMatch != null) {
+            final contentLength = int.parse(contentLengthMatch.group(1)!);
+            final bodyLength = buffer.length - (headersEnd + 4);
+            if (bodyLength >= contentLength) {
+              break;
             }
-          } else if (headers.contains('connection: close')) {
-            // Wait for connection to close
           }
         }
-      },
-      onError: (e) {
-        timer?.cancel();
-        if (!completer.isCompleted) {
-          completer.complete(null);
-        }
-      },
-      onDone: () {
-        timer?.cancel();
-        if (!completer.isCompleted) {
-          completer.complete(buffer.toString().isEmpty ? null : buffer.toString());
-        }
-      },
-    );
+      }
+    } catch (e) {
+      // Timeout or error, return what we have so far
+    }
 
-    return completer.future;
+    final responseStr = utf8.decode(buffer, allowMalformed: true);
+    return responseStr.isEmpty ? null : responseStr;
   }
 }

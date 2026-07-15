@@ -244,30 +244,58 @@ class DoubleRatchet {
   static final _kdfRkInfo = Uint8List.fromList('SecureInstaMessage_RK'.codeUnits);
   static final _kdfCkInfo = Uint8List.fromList('SecureInstaMessage_CK'.codeUnits);
 
-  /// Initialize as the sender (Alice, who initiated X3DH).
-  Future<RatchetState> initializeAsSender({
+  /// Initialize the ratchet symmetrically.
+  ///
+  /// Both sides independently call this with the same shared secret
+  /// from X3DH. Chain keys are derived deterministically so both sides
+  /// get matching send/receive chains without exchanging messages.
+  ///
+  /// [isInitiator]: true if our public key is lexicographically lower.
+  /// This determines which chain is for sending vs receiving.
+  Future<RatchetState> initializeSymmetric({
     required List<int> sharedSecret,
-    required List<int> remoteDhPublicKey,
-  }) async {
-    final state = RatchetState(rootKey: sharedSecret);
-    state.remoteDhPublicKey = remoteDhPublicKey;
-
-    // Generate our first DH key pair
-    state.dhKeyPair = await _x25519.newKeyPair();
-
-    // Perform initial DH ratchet
-    await _dhRatchet(state, remoteDhPublicKey);
-
-    return state;
-  }
-
-  /// Initialize as the receiver (Bob).
-  Future<RatchetState> initializeAsReceiver({
-    required List<int> sharedSecret,
+    required bool isInitiator,
     required SimpleKeyPair dhKeyPair,
   }) async {
     final state = RatchetState(rootKey: sharedSecret);
     state.dhKeyPair = dhKeyPair;
+
+    // Derive two chain keys deterministically from the shared secret
+    // using HKDF with different info labels
+    final inputKey = SecretKey(sharedSecret);
+
+    final chainKeyA = await _hkdf.deriveKey(
+      secretKey: inputKey,
+      nonce: Uint8List(32),
+      info: Uint8List.fromList('SecureInstaMessage_ChainA'.codeUnits),
+    );
+    final chainKeyB = await _hkdf.deriveKey(
+      secretKey: inputKey,
+      nonce: Uint8List(32),
+      info: Uint8List.fromList('SecureInstaMessage_ChainB'.codeUnits),
+    );
+
+    final chainA = await chainKeyA.extractBytes();
+    final chainB = await chainKeyB.extractBytes();
+
+    // Initiator sends on A, receives on B
+    // Responder sends on B, receives on A
+    if (isInitiator) {
+      state.sendingChainKey = chainA;
+      state.receivingChainKey = chainB;
+    } else {
+      state.sendingChainKey = chainB;
+      state.receivingChainKey = chainA;
+    }
+
+    // Also derive a root key for future DH ratchet steps
+    final rootKeyDerived = await _hkdf.deriveKey(
+      secretKey: inputKey,
+      nonce: Uint8List(32),
+      info: Uint8List.fromList('SecureInstaMessage_RootKey'.codeUnits),
+    );
+    state.rootKey = await rootKeyDerived.extractBytes();
+
     return state;
   }
 
@@ -319,6 +347,47 @@ class DoubleRatchet {
     if (state.skippedMessageKeys.containsKey(skippedId)) {
       final messageKey = state.skippedMessageKeys.remove(skippedId)!;
       return _decryptWithKey(message, messageKey);
+    }
+
+    if (state.remoteDhPublicKey == null) {
+      // First message received in symmetrically initialized session.
+      // It might be symmetrically encrypted (unratcheted) or ratcheted.
+      final savedReceivingChainKey = state.receivingChainKey;
+      final savedReceivingMessageNumber = state.receivingMessageNumber;
+      
+      try {
+        // Set temporarily for skipMessages
+        state.remoteDhPublicKey = message.header.dhPublicKey;
+        
+        // Try unratcheted
+        await _skipMessages(state, message.header.messageNumber);
+        final (newChainKey, messageKey) = await _kdfChainKey(state.receivingChainKey!);
+        final plaintext = await _decryptWithKey(message, messageKey);
+        
+        // Success! Unratcheted.
+        state.receivingChainKey = newChainKey;
+        state.receivingMessageNumber++;
+        
+        // Perform a Half-Ratchet so our next reply will trigger a full ratchet on their side
+        state.dhKeyPair = await _x25519.newKeyPair();
+        final remotePub = SimplePublicKey(state.remoteDhPublicKey!, type: KeyPairType.x25519);
+        final dhOut = await _x25519.sharedSecretKey(keyPair: state.dhKeyPair!, remotePublicKey: remotePub);
+        final (newRoot, sendChain) = await _kdfRootKey(state.rootKey, await dhOut.extractBytes());
+        state.rootKey = newRoot;
+        state.sendingChainKey = sendChain;
+        state.previousSendingChainLength = state.sendingMessageNumber;
+        state.sendingMessageNumber = 0;
+        state.ratchetEpoch++;
+        
+        return plaintext;
+      } catch (e) {
+        // Failed. Must be ratcheted. Restore state and fall through to full DH ratchet.
+        state.remoteDhPublicKey = null;
+        state.receivingChainKey = savedReceivingChainKey;
+        state.receivingMessageNumber = savedReceivingMessageNumber;
+        // Also clear any accidentally skipped keys
+        state.skippedMessageKeys.removeWhere((key, value) => _listEquals(key.dhPublicKey, message.header.dhPublicKey));
+      }
     }
 
     // Check if we need to perform a DH ratchet
@@ -413,11 +482,13 @@ class DoubleRatchet {
           await _kdfChainKey(state.receivingChainKey!);
       state.receivingChainKey = newChainKey;
 
-      final skippedId = SkippedKeyId(
-        state.remoteDhPublicKey!,
-        state.receivingMessageNumber,
-      );
-      state.skippedMessageKeys[skippedId] = messageKey;
+      if (state.remoteDhPublicKey != null) {
+        final skippedId = SkippedKeyId(
+          state.remoteDhPublicKey!,
+          state.receivingMessageNumber,
+        );
+        state.skippedMessageKeys[skippedId] = messageKey;
+      }
 
       state.receivingMessageNumber++;
 

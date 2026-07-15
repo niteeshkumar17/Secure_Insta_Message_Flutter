@@ -43,22 +43,27 @@ class PollResult {
   /// Error message if failed
   final String? error;
 
-  const PollResult({
-    required this.envelopes,
+  /// Whether the client should upload a new prekey bundle
+  final bool needsBundle;
+
+  PollResult._({
     required this.success,
     this.error,
+    this.envelopes = const [],
+    this.needsBundle = false,
   });
 
-  factory PollResult.success(List<List<int>> envelopes) => PollResult(
-        envelopes: envelopes,
-        success: true,
-      );
+  factory PollResult.success(List<List<int>> envelopes, {bool needsBundle = false}) {
+    return PollResult._(
+      success: true,
+      envelopes: envelopes,
+      needsBundle: needsBundle,
+    );
+  }
 
-  factory PollResult.failure(String error) => PollResult(
-        envelopes: [],
-        success: false,
-        error: error,
-      );
+  factory PollResult.failure(String error) {
+    return PollResult._(success: false, error: error);
+  }
 }
 
 /// Mailbox server configuration.
@@ -81,7 +86,16 @@ class MailboxConfig {
 /// message transport. Direct device-to-device communication is
 /// explicitly forbidden.
 class MailboxClient extends ChangeNotifier {
-  final Socks5Client _socks5;
+  final String _proxyHost;
+  final int _proxyPort;
+
+  late Socks5Client _pollSocks5;
+  late Socks5Client _sendSocks5;
+
+  late DateTime _pollClientCreatedAt;
+  late DateTime _sendClientCreatedAt;
+
+  static const Duration _clientRotationAge = Duration(minutes: 8);
 
   /// Configured mailbox servers (multiple for redundancy)
   final List<MailboxConfig> _mailboxServers = [];
@@ -96,7 +110,37 @@ class MailboxClient extends ChangeNotifier {
   bool get isInitialized => _isInitialized;
 
   MailboxClient({Socks5Client? socks5Client})
-      : _socks5 = socks5Client ?? Socks5Client();
+      : _proxyHost = socks5Client?.proxyHost ?? '127.0.0.1',
+        _proxyPort = socks5Client?.proxyPort ?? 9050 {
+    _rotatePollClient();
+    _rotateSendClient();
+  }
+
+  void _rotatePollClient() {
+    _pollSocks5 = Socks5Client(proxyHost: _proxyHost, proxyPort: _proxyPort);
+    _pollClientCreatedAt = DateTime.now();
+    debugPrint('MailboxClient: Rotated poll Socks5Client');
+  }
+
+  void _rotateSendClient() {
+    _sendSocks5 = Socks5Client(proxyHost: _proxyHost, proxyPort: _proxyPort);
+    _sendClientCreatedAt = DateTime.now();
+    debugPrint('MailboxClient: Rotated send Socks5Client');
+  }
+
+  Socks5Client _getPollClient() {
+    if (DateTime.now().difference(_pollClientCreatedAt) >= _clientRotationAge) {
+      _rotatePollClient();
+    }
+    return _pollSocks5;
+  }
+
+  Socks5Client _getSendClient() {
+    if (DateTime.now().difference(_sendClientCreatedAt) >= _clientRotationAge) {
+      _rotateSendClient();
+    }
+    return _sendSocks5;
+  }
 
   /// Initialize with our mailbox configuration.
   Future<void> initialize({
@@ -137,7 +181,7 @@ class MailboxClient extends ChangeNotifier {
     // Try each mailbox server until success
     for (final server in _mailboxServers) {
       try {
-        final response = await _socks5.post(
+        final response = await _getSendClient().post(
           server.onionAddress,
           server.port,
           '/submit',
@@ -145,7 +189,7 @@ class MailboxClient extends ChangeNotifier {
             'mailbox_id': mailboxId,
             'envelope': base64Encode(envelope),
           },
-          timeout: const Duration(seconds: 60),
+          timeout: const Duration(seconds: 10),
         );
 
         // We don't expect a meaningful response
@@ -186,7 +230,7 @@ class MailboxClient extends ChangeNotifier {
     // Try each mailbox server
     for (final server in _mailboxServers) {
       try {
-        final response = await _socks5.post(
+        final response = await _getPollClient().post(
           server.onionAddress,
           server.port,
           '/poll',
@@ -203,9 +247,10 @@ class MailboxClient extends ChangeNotifier {
           final envelopes = envelopeList
               .map((e) => base64Decode(e as String))
               .toList();
+          final needsBundle = response['needs_bundle'] == true;
 
-          debugPrint('MailboxClient: Retrieved ${envelopes.length} envelopes');
-          return PollResult.success(envelopes);
+          debugPrint('MailboxClient: Retrieved ${envelopes.length} envelopes. Needs bundle: $needsBundle');
+          return PollResult.success(envelopes, needsBundle: needsBundle);
         }
       } catch (e) {
         debugPrint('MailboxClient: Failed to poll ${server.onionAddress}: $e');
@@ -226,7 +271,7 @@ class MailboxClient extends ChangeNotifier {
 
     for (final server in _mailboxServers) {
       try {
-        final response = await _socks5.post(
+        final response = await _getSendClient().post(
           server.onionAddress,
           server.port,
           '/publish_bundle',
@@ -260,7 +305,7 @@ class MailboxClient extends ChangeNotifier {
 
     for (final server in _mailboxServers) {
       try {
-        final response = await _socks5.post(
+        final response = await _getSendClient().post(
           server.onionAddress,
           server.port,
           '/fetch_bundle',
@@ -271,7 +316,12 @@ class MailboxClient extends ChangeNotifier {
         );
 
         if (response != null && response.containsKey('bundle')) {
-          return response['bundle'] as String;
+          final bundleObj = response['bundle'];
+          if (bundleObj is String) {
+            return bundleObj;
+          } else {
+            return jsonEncode(bundleObj);
+          }
         }
       } catch (e) {
         debugPrint('MailboxClient: Failed to fetch bundle: $e');

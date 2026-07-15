@@ -15,10 +15,11 @@
 
 import 'dart:async';
 import 'dart:math';
-import 'package:flutter/foundation.dart';
+import 'dart:convert';
+import 'package:flutter/widgets.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'mailbox_client.dart';
 import '../crypto/crypto_service.dart';
-import '../crypto/padding.dart';
 
 /// Configuration for cover traffic behavior.
 class CoverTrafficConfig {
@@ -35,7 +36,7 @@ class CoverTrafficConfig {
   final bool enabled;
 
   const CoverTrafficConfig({
-    this.pollInterval = const Duration(seconds: 30),
+    this.pollInterval = const Duration(seconds: 1),
     this.minOutboundPerInterval = 1,
     this.jitterPercent = 0.2,
     this.enabled = true,
@@ -83,10 +84,11 @@ class CoverTrafficStats {
 /// 1. Constant-rate polling (independent of incoming messages)
 /// 2. Minimum outbound traffic (padding with cover messages)
 /// 3. All traffic is indistinguishable
-class CoverTrafficManager extends ChangeNotifier {
+class CoverTrafficManager extends ChangeNotifier with WidgetsBindingObserver {
   final MailboxClient _mailboxClient;
   final CryptoService _cryptoService;
   final CoverTrafficConfig _config;
+  final _storage = const FlutterSecureStorage();
 
   final _random = Random.secure();
   final CoverTrafficStats stats = CoverTrafficStats();
@@ -102,6 +104,12 @@ class CoverTrafficManager extends ChangeNotifier {
   Timer? _sendTimer;
   bool _isRunning = false;
   bool get isRunning => _isRunning;
+  bool _isSending = false;
+  bool _isPolling = false;
+
+  Timer? _debounceTimer;
+  bool _hasPendingSave = false;
+  bool _isSavingQueue = false;
 
   /// Callback for processing received envelopes
   Future<void> Function(List<int> envelope)? onEnvelopeReceived;
@@ -112,7 +120,92 @@ class CoverTrafficManager extends ChangeNotifier {
     CoverTrafficConfig? config,
   })  : _mailboxClient = mailboxClient,
         _cryptoService = cryptoService,
-        _config = config ?? const CoverTrafficConfig();
+        _config = config ?? const CoverTrafficConfig() {
+    WidgetsBinding.instance.addObserver(this);
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.paused || state == AppLifecycleState.detached) {
+      flushQueue();
+    }
+  }
+
+  void _scheduleSaveQueue() {
+    _hasPendingSave = true;
+    if (_debounceTimer?.isActive ?? false) return;
+
+    _debounceTimer = Timer(const Duration(milliseconds: 300), () {
+      flushQueue();
+    });
+  }
+
+  Future<void> flushQueue() async {
+    if (!_hasPendingSave) return;
+    if (_isSavingQueue) {
+      _debounceTimer?.cancel();
+      _debounceTimer = Timer(const Duration(milliseconds: 100), () {
+        flushQueue();
+      });
+      return;
+    }
+
+    _isSavingQueue = true;
+    _hasPendingSave = false;
+    _debounceTimer?.cancel();
+
+    try {
+      await _saveQueue();
+    } finally {
+      _isSavingQueue = false;
+    }
+  }
+
+  Future<void> _saveQueue() async {
+    try {
+      final List<Map<String, dynamic>> queueJson = _outboundQueue.where((e) => e.isReal).map((entry) => {
+        'mailbox_id': entry.mailboxId,
+        'envelope': _bytesToHex(entry.envelope),
+      }).toList();
+      await _storage.write(key: 'cover_traffic_outbound_queue_v1', value: json.encode(queueJson));
+    } catch (e) {
+      debugPrint('CoverTrafficManager: Error saving queue: $e');
+    }
+  }
+
+  Future<void> loadQueue() async {
+    try {
+      final queueStr = await _storage.read(key: 'cover_traffic_outbound_queue_v1');
+      if (queueStr != null) {
+        final List<dynamic> decoded = json.decode(queueStr);
+        _outboundQueue.clear();
+        for (final item in decoded) {
+          final mailboxId = item['mailbox_id'] as String;
+          final envelopeHex = item['envelope'] as String;
+          _outboundQueue.add(OutboundQueueEntry(
+            mailboxId: mailboxId,
+            envelope: _hexToBytes(envelopeHex),
+            isReal: true,
+          ));
+        }
+        debugPrint('CoverTrafficManager: Loaded ${_outboundQueue.length} real messages from queue persistence.');
+      }
+    } catch (e) {
+      debugPrint('CoverTrafficManager: Error loading queue: $e');
+    }
+  }
+
+  String _bytesToHex(List<int> bytes) {
+    return bytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
+  }
+
+  List<int> _hexToBytes(String hex) {
+    final result = <int>[];
+    for (var i = 0; i < hex.length; i += 2) {
+      result.add(int.parse(hex.substring(i, i + 2), radix: 16));
+    }
+    return result;
+  }
 
   /// Add cover mailbox IDs.
   /// These are dummy mailboxes operated by the service that
@@ -134,12 +227,23 @@ class CoverTrafficManager extends ChangeNotifier {
       envelope: envelope,
       isReal: true,
     ));
+    _scheduleSaveQueue();
     debugPrint('CoverTraffic: Queued real message for $mailboxId');
   }
 
   /// Start cover traffic management.
-  void start() {
+  void start() async {
     if (_isRunning || !_config.enabled) return;
+
+    if (_coverMailboxIds.isEmpty) {
+      for (var i = 0; i < 5; i++) {
+        final randomId = List.generate(32, (_) => _random.nextInt(16).toRadixString(16)).join();
+        _coverMailboxIds.add(randomId);
+      }
+    }
+
+    // Load persisted real messages from storage queue
+    await loadQueue();
 
     _isRunning = true;
 
@@ -168,71 +272,105 @@ class CoverTrafficManager extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Poll mailbox at constant rate.
+  /// Callback when the server requests a new prekey bundle
+  Future<void> Function()? onNeedsBundle;
+
   Future<void> _pollMailbox() async {
-    final result = await _mailboxClient.pollMailbox();
+    if (_isPolling) return;
+    _isPolling = true;
 
-    if (result.success) {
-      stats.pollsPerformed++;
+    try {
+      final result = await _mailboxClient.pollMailbox();
 
-      for (final envelope in result.envelopes) {
-        stats.envelopesReceived++;
+      if (result.success) {
+        stats.pollsPerformed++;
 
-        // Process envelope through callback
-        if (onEnvelopeReceived != null) {
+        if (result.needsBundle && onNeedsBundle != null) {
+          debugPrint('CoverTraffic: Server requested new bundle, calling callback');
           try {
-            await onEnvelopeReceived!(envelope);
+            await onNeedsBundle!();
           } catch (e) {
-            debugPrint('CoverTraffic: Error processing envelope: $e');
+            debugPrint('CoverTraffic: onNeedsBundle callback failed: $e');
+          }
+        }
+
+        for (final envelope in result.envelopes) {
+          stats.envelopesReceived++;
+
+          // Process envelope through callback
+          if (onEnvelopeReceived != null) {
+            try {
+              await onEnvelopeReceived!(envelope);
+            } catch (e) {
+              debugPrint('CoverTraffic: Error processing envelope: $e');
+            }
           }
         }
       }
+    } finally {
+      _isPolling = false;
     }
   }
 
-  /// Send a batch of messages (real + cover).
   Future<void> _sendBatch() async {
-    final batch = _prepareBatch();
+    if (_isSending) return;
+    _isSending = true;
 
-    // Send all messages in batch (shuffled order)
-    batch.shuffle(_random);
+    try {
+      // Copy the current real messages queue to send
+      final realMessages = List<OutboundQueueEntry>.from(_outboundQueue);
 
-    for (final entry in batch) {
-      final result = await _mailboxClient.submitEnvelope(
-        mailboxId: entry.mailboxId,
-        envelope: entry.envelope,
-      );
-
-      if (result == SubmitResult.accepted) {
-        if (entry.isReal) {
-          stats.realMessagesSent++;
-        } else {
-          stats.coverMessagesSent++;
-        }
+      // Pad with cover messages to reach the configured minimum
+      final coverMessages = <OutboundQueueEntry>[];
+      final coverNeeded = _config.minOutboundPerInterval - realMessages.length;
+      for (var i = 0; i < coverNeeded && _coverMailboxIds.isNotEmpty; i++) {
+        coverMessages.add(_generateCoverMessage());
       }
 
-      // Small random delay between sends (within jitter)
-      await Future.delayed(Duration(
-        milliseconds: _random.nextInt(200) + 50,
-      ));
+      // Interleave real and cover messages randomly to obscure actual activity
+      final finalBatch = List<OutboundQueueEntry>.from(realMessages);
+      for (final cover in coverMessages) {
+        final insertPos = _random.nextInt(finalBatch.length + 1);
+        finalBatch.insert(insertPos, cover);
+      }
+
+      for (final entry in finalBatch) {
+        final result = await _mailboxClient.submitEnvelope(
+          mailboxId: entry.mailboxId,
+          envelope: entry.envelope,
+        );
+
+        if (result == SubmitResult.accepted) {
+          if (entry.isReal) {
+            stats.realMessagesSent++;
+            // Transactional: remove from list and save to secure storage only on success
+            _outboundQueue.removeWhere((e) => e.mailboxId == entry.mailboxId && _listEquals(e.envelope, entry.envelope));
+            _scheduleSaveQueue();
+          } else {
+            stats.coverMessagesSent++;
+          }
+        } else {
+          if (entry.isReal) {
+            debugPrint('CoverTraffic: Failed to submit real envelope to ${entry.mailboxId}, keeping in queue.');
+          }
+        }
+
+        // Small random delay between sends (within jitter)
+        await Future.delayed(Duration(
+          milliseconds: _random.nextInt(200) + 50,
+        ));
+      }
+    } finally {
+      _isSending = false;
     }
   }
 
-  /// Prepare batch of messages to send.
-  List<OutboundQueueEntry> _prepareBatch() {
-    final batch = <OutboundQueueEntry>[];
-
-    // Add all queued real messages
-    batch.addAll(_outboundQueue);
-    _outboundQueue.clear();
-
-    // Pad with cover messages to reach minimum
-    final coverNeeded = _config.minOutboundPerInterval - batch.length;
-    for (var i = 0; i < coverNeeded && _coverMailboxIds.isNotEmpty; i++) {
-      batch.add(_generateCoverMessage());
+  bool _listEquals(List<int> a, List<int> b) {
+    if (a.length != b.length) return false;
+    for (var i = 0; i < a.length; i++) {
+      if (a[i] != b[i]) return false;
     }
-
-    return batch;
+    return true;
   }
 
   /// Generate a cover message.
@@ -259,7 +397,12 @@ class CoverTrafficManager extends ChangeNotifier {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     stop();
+    _debounceTimer?.cancel();
+    if (_hasPendingSave) {
+      _saveQueue();
+    }
     super.dispose();
   }
 }
